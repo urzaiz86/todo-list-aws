@@ -33,7 +33,7 @@ Resources:
       CodeUri: src/
       Role: !Sub "arn:aws:iam::${AWS::AccountId}:role/LabRole"
       Handler: create.create
-      Runtime: python3.7
+      Runtime: python3.8
       Events:
         Create:
           Type: Api
