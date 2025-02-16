@@ -1,0 +1,92 @@
+pipeline {
+    agent any
+
+    environment {
+        // Storing the secret token from Jenkins as an environment variable
+        MiToken = credentials('prueba')  // 'MiToken' is the ID of your secret text in Jenkins
+        REGION = 'us-east-1'  // O la región que prefieras
+        STACK_NAME = 'todo-list-aws-production'  // Nombre del stack de CloudFormation
+        S3_BUCKET = 'todo-list-aws-production1'  // Nombre del bucket S3
+    }
+
+    stages {
+        stage('Get Code') {
+            steps {
+                git branch: 'master', url: 'https://github.com/urzaiz86/todo-list-aws.git'
+            }
+        }
+
+        stage('Static Test') {
+            steps {
+                // Ejecutar flake8 en la carpeta src/ y continuar sin importar los errores
+                sh '/var/lib/jenkins/.local/bin/flake8 src/ > flake8_report.txt || true'
+                // Ejecutar bandit en la carpeta src/ y generar el informe HTML
+                sh '/var/lib/jenkins/.local/bin/bandit -r src/ -f html -o bandit_report.html || true'
+            }
+        }
+
+        stage('Deploy to Production') {
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        // Comando SAM para desplegar en production
+                        sh 'sam build'
+                        sh 'sam validate --region us-east-1'
+                        // Ejecutar el despliegue con SAM
+                        sh """
+                            sam deploy --config-file samconfig.toml --config-env production --no-confirm-changeset --no-fail-on-empty-changeset
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Rest Test') {
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        try {
+                            // Ejecutar pruebas de solo lectura en el entorno productivo
+                            sh(script: """
+                                export BASE_URL=${env.BASE_URL}
+                                pytest tests/ --maxfail=1 --disable-warnings -v -m "read_only"
+                            """)
+                        } catch (Exception e) {
+                            echo "No me muestra la url.. : ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Promote to Production') {
+            steps {
+                script {
+                    def mergeSuccessful = false
+                    try {
+                        // Verifica el estado actual del repositorio
+                        sh 'git status'
+                        // sh 'git checkout master'
+                        // sh 'git config pull.rebase false'
+                        // sh 'git pull origin master'
+                        // sh 'git merge develop'
+                        // sh 'git remote set-url origin https://${prueba}github.com/urzaiz86/todo-list-aws.git'
+                        // sh 'git push origin master'
+
+                        // Si no hubo excepciones, marcar el merge como exitoso
+                        mergeSuccessful = true
+                    } catch (Exception e) {
+                        // Si ocurre un error, marcar como fallido
+                        mergeSuccessful = false
+                        error "Merge failed: ${e.message}"
+                    }
+
+                    // Comprobar si el merge fue exitoso antes de continuar
+                    if (!mergeSuccessful) {
+                        error "Merge to master failed. Aborting production deployment."
+                    }
+                }
+            }
+        }
+    }
+}

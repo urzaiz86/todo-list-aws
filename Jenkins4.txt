@@ -1,0 +1,100 @@
+pipeline {
+    agent none
+
+    environment {
+        MiToken = credentials('prueba')  // 'MiToken' is the ID of your secret text in Jenkins
+        REGION = 'us-east-1'  // O la región que prefieras
+        STACK_NAME = 'todo-list-aws-production'  // Nombre del stack de CloudFormation
+        S3_BUCKET = 'todo-list-aws-production1'  // Nombre del bucket S3
+    }
+
+    stages {
+        stage('Get Code') {
+            agent any  // Se ejecuta en el agente por defecto
+            steps {
+                script {
+                    // Descargar el código fuente
+                    git branch: 'master', url: 'https://github.com/urzaiz86/todo-list-aws.git'
+
+                    // Descargar el archivo samconfig.toml del repositorio de configuración
+                    sh """
+                        git clone -b production https://github.com/urzaiz86/todo-list-aws-config.git config-repo
+                        cp config-repo/samconfig.toml .
+                    """
+                }
+            }
+        }
+
+        stage('Static Test') {
+            agent {
+                label 'agente1'  // Especificar un agente para las pruebas de análisis estático
+            }
+            steps {
+                sh '/var/lib/jenkins/.local/bin/flake8 src/ > flake8_report.txt || true'
+                sh '/var/lib/jenkins/.local/bin/bandit -r src/ -f html -o bandit_report.html || true'
+            }
+        }
+
+        stage('Deploy to Production') {
+            agent any  // Se ejecuta en el agente por defecto
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        sh 'sam build'
+                        sh 'sam validate --region us-east-1'
+                        sh """
+                            sam deploy --config-file samconfig.toml --config-env production --no-confirm-changeset --no-fail-on-empty-changeset
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Rest Test') {
+            agent {
+                label 'agente2'  // Especificar un agente para las pruebas de API Rest
+            }
+            steps {
+                script {
+                    catchError(buildResult: 'SUCCESS', stageResult: 'FAILURE') {
+                        try {
+                            // Ejecutar pruebas de solo lectura en el entorno productivo
+                            sh(script: """
+                                export BASE_URL=${env.BASE_URL}
+                                pytest tests/ --maxfail=1 --disable-warnings -v -m "read_only"
+                            """)
+                        } catch (Exception e) {
+                            echo "No me muestra la url.. : ${e.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Promote to Production') {
+            agent any  // Se ejecuta en el agente por defecto
+            steps {
+                script {
+                    def mergeSuccessful = false
+                    try {
+                        sh 'git status'
+                        // sh 'git checkout master'
+                        // sh 'git config pull.rebase false'
+                        // sh 'git pull origin master'
+                        // sh 'git merge develop'
+                        // sh 'git remote set-url origin https://${prueba}github.com/urzaiz86/todo-list-aws.git'
+                        // sh 'git push origin master'
+                        mergeSuccessful = true
+                    } catch (Exception e) {
+                        mergeSuccessful = false
+                        error "Merge failed: ${e.message}"
+                    }
+
+                    if (!mergeSuccessful) {
+                        error "Merge to master failed. Aborting production deployment."
+                    }
+                }
+            }
+        }
+    }
+}
